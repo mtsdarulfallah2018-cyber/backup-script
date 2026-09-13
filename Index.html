@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>e-Sarpras MTs Darul Fallah</title>
+  <style>
+    :root {
+      --brand: #0F2624;
+      --brand-hover: #1A3E3B;
+      --accent: #A9812F;
+      --bg: #F8FAFC;
+      --panel: #FFFFFF;
+      --border: #E2E8F0;
+      --text: #1E293B;
+      --muted: #64748B;
+      --good: #10B981;
+      --warn: #F59E0B;
+      --bad: #EF4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
+
+    #sidebar { width: 260px; background: var(--brand); color: #FFF; display: flex; flex-direction: column; flex-shrink: 0; }
+    #main { flex: 1; display: flex; flex-direction: column; overflow-y: auto; background: var(--bg); }
+    
+    .sidebar-header { padding: 20px 16px; border-bottom: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; gap: 12px; }
+    .logo-img { width: 40px; height: 40px; border-radius: 50%; background: #FFF; padding: 2px; object-fit: cover; border: 1px solid var(--accent); flex-shrink: 0; }
+    .brand-title { font-size: 16px; font-weight: 700; color: #FFF; line-height: 1.2; }
+    .brand-sub { font-size: 11px; color: var(--accent); margin-top: 2px; }
+
+    .nav-list { padding: 16px 8px; flex: 1; overflow-y: auto; }
+    .nav-item { width: 100%; text-align: left; background: none; border: none; color: #94A3B8; padding: 10px 12px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; margin-bottom: 4px; display: block; }
+    .nav-item:hover { background: rgba(255,255,255,0.05); color: #FFF; }
+    .nav-item.active { background: var(--accent); color: #FFF; font-weight: 600; }
+
+    .sidebar-user { padding: 16px; border-top: 1px solid rgba(255,255,255,0.1); }
+
+    .top-header { background: #FFF; border-bottom: 1px solid var(--border); padding: 16px 32px; display: flex; justify-content: space-between; align-items: center; }
+    .page-title { font-size: 20px; font-weight: 700; color: var(--brand); }
+    .page-lede { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+    .content-body { padding: 24px 32px; }
+
+    .btn { background: var(--brand); color: #FFF; border: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+    .btn:hover { background: var(--brand-hover); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn.secondary { background: #E2E8F0; color: var(--text); }
+    .btn.secondary:hover { background: #CBD5E1; }
+    .btn.danger { background: #DC2626; color: #FFF; }
+    .btn.danger:hover { background: #B91C1C; }
+    .btn.small { padding: 4px 10px; font-size: 12px; }
+
+    .panel { background: #FFF; border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }
+    .stat-card { background: #FFF; border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .stat-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .stat-value { font-size: 24px; font-weight: 700; color: var(--brand); }
+    .stat-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    .tone-good { color: var(--good); }
+    .tone-warn { color: var(--warn); }
+    .tone-bad { color: var(--bad); }
+
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+    .badge-good { background: #D1FAE5; color: #065F46; }
+    .badge-warn { background: #FEF3C7; color: #92400E; }
+    .badge-bad { background: #FEE2E2; color: #991B1B; }
+    .badge-neutral { background: #F1F5F9; color: #475569; }
+
+    table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+    th { background: #F8FAFC; padding: 12px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+    td { padding: 12px; border-bottom: 1px solid var(--border); color: var(--text); }
+    tr:last-child td { border-bottom: none; }
+    .muted { color: var(--muted); }
+    .empty-note { text-align: center; padding: 24px; color: var(--muted); }
+
+    .note-box { font-size: 11px; color: #854D0E; background: #FEF9C3; padding: 4px 8px; border-radius: 4px; margin-top: 4px; border-left: 2px solid #CA8A04; display: inline-block; }
+
+    .section-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 16px; }
+    .eyebrow { font-size: 11px; color: var(--accent); text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; }
+    .toolbar { display: flex; gap: 12px; align-items: center; }
+    .search-box input { padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; width: 240px; }
+
+    .field { margin-bottom: 16px; }
+    .field label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; color: var(--text); }
+    .field input, .field select, .field textarea { width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+    .field textarea { height: 80px; resize: vertical; }
+
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+    .modal { background: #FFF; width: 100%; max-width: 480px; border-radius: 8px; overflow: hidden; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+    .modal-head { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+    .modal-body { padding: 20px; }
+    .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+    .icon-btn { background: none; border: none; font-size: 16px; cursor: pointer; color: var(--muted); }
+
+    .cond-bar { height: 12px; background: #E2E8F0; border-radius: 6px; overflow: hidden; display: flex; margin: 12px 0; }
+    .cond-seg-good { background: var(--good); }
+    .cond-seg-warn { background: var(--warn); }
+    .cond-seg-bad { background: var(--bad); }
+    .cond-legend { display: flex; gap: 16px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+    .cond-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+
+    /* Barcode & Label Styling */
+    .barcode-img { height: 36px; object-fit: contain; vertical-align: middle; }
+    .barcode-card { text-align: center; border: 2px dashed var(--brand); padding: 16px; border-radius: 8px; background: #FFF; margin-top: 10px; }
+    .barcode-card img { max-width: 100%; height: 60px; margin: 8px 0; }
+    .barcode-card p { font-size: 12px; color: var(--muted); margin: 2px 0; }
+
+    .report-doc { background: #FFF; padding: 32px; border-radius: 8px; border: 1px solid var(--border); margin-top: 16px; }
+    .report-head { display: flex; align-items: center; gap: 20px; padding-bottom: 20px; margin-bottom: 24px; border-bottom: 2px solid var(--brand); }
+    .report-logo { width: 72px; height: 72px; object-fit: contain; border-radius: 50%; border: 1px solid var(--accent); flex-shrink: 0; }
+    .report-head h1 { font-size: 22px; color: var(--brand); margin-bottom: 4px; }
+    .report-head p { font-size: 13px; color: var(--muted); }
+    .report-section { margin-bottom: 24px; }
+    .report-section h3 { font-size: 15px; color: var(--brand); margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+    .report-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 12px; }
+    .report-metric { background: #F8FAFC; padding: 12px; border-radius: 6px; border: 1px solid var(--border); }
+    .report-metric .n { font-size: 18px; font-weight: 700; color: var(--brand); }
+    .report-metric .l { font-size: 11px; color: var(--muted); }
+    .signoff { margin-top: 40px; display: flex; justify-content: flex-end; }
+    .signoff-block { text-align: center; width: 200px; font-size: 12px; color: var(--text); }
+    .signoff-block .line { margin-top: 60px; border-top: 1px solid var(--text); padding-top: 4px; font-weight: 600; }
+  </style>
+</head>
+<body>
+
+  <div id="sidebar">
+    <div class="sidebar-header">
+      <img src="https://lh3.googleusercontent.com/d/1kf_OX9MmdUMyMeVR6yuJRLsTdFzTRzHv" alt="Logo MTs Darul Fallah" class="logo-img">
+      <div>
+        <div class="brand-title">e-Sarpras</div>
+        <div class="brand-sub">MTs Darul Fallah</div>
+      </div>
+    </div>
+    <div class="nav-list" id="navList"></div>
+    <div class="sidebar-user" id="userInfo"></div>
+  </div>
+
+  <div id="main">
+    <div class="top-header">
+      <div>
+        <h1 class="page-title" id="pageTitle">e-Sarpras</h1>
+        <p class="page-lede" id="pageLede">Sistem Informasi Sarana dan Prasarana</p>
+      </div>
+    </div>
+    <div class="content-body" id="content"></div>
+  </div>
+
+  <div id="modalRoot"></div>
+
+  <?!= include('JavaScript'); ?>
+</body>
+</html>

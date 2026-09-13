@@ -1,0 +1,824 @@
+<script>
+  const CONDITIONS = ['Baik', 'Rusak Ringan', 'Rusak Berat'];
+  const FACILITIES = ['Aula', 'Lab Komputer', 'Musholla', 'Perpustakaan', 'Ruang Kelas VII A', 'Lapangan'];
+  const ROLE_LABEL = { admin: 'Admin Sarpras', kepala: 'Kepala Madrasah', guru: 'Guru & Staf' };
+
+  const NAV = [
+    { id: 'dashboard', label: 'Dasbor', lede: 'Ringkasan kondisi sarana dan prasarana madrasah secara keseluruhan.' },
+    { id: 'inventaris', label: 'Inventaris', lede: 'Daftar aset, barcode, dan kondisinya di seluruh unit madrasah.' },
+    { id: 'usulan', label: 'Usulan Perbaikan', lede: 'Usulan perbaikan yang diajukan guru dan staf, beserta status penanganannya.' },
+    { id: 'pengadaan', label: 'Pengadaan', lede: 'Pengajuan pengadaan barang dan status persetujuannya.' },
+    { id: 'peminjaman', label: 'Peminjaman Ruangan', lede: 'Jadwal dan status permohonan penggunaan ruangan/fasilitas.' },
+    { id: 'akreditasi', label: 'Laporan Akreditasi', lede: 'Ringkasan otomatis untuk mendukung dokumen akreditasi (BAN-S/M).' },
+    { id: 'pengguna', label: 'Manajemen Pengguna', lede: 'Atur peran akses dan akun pengguna aplikasi.' }
+  ];
+
+  const STATE = { page: 'dashboard', search: '', data: null, userSession: null };
+
+  // Helper untuk menghasilkan URL gambar Barcode secara otomatis berdasarkan kode aset
+  function getBarcodeUrl(code) {
+    if (!code) return '';
+    return 'https://bwipjs-api.metafloor.com/?bcid=code128&text=' + encodeURIComponent(code) + '&scale=2&rotate=N&includetext';
+  }
+
+  function callServer(fnName, ...args) {
+    return new Promise((resolve, reject) => {
+      const runner = google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler((err) => reject(err));
+
+      switch (fnName) {
+        case 'getBootstrapData':
+          runner.getBootstrapData(...args);
+          break;
+        case 'loginUser':
+          runner.loginUser(...args);
+          break;
+        case 'addAsset':
+          runner.addAsset(...args);
+          break;
+        case 'addMaintenance':
+          runner.addMaintenance(...args);
+          break;
+        case 'advanceMaintenanceStatus':
+          runner.advanceMaintenanceStatus(...args);
+          break;
+        case 'reviewMaintenance':
+          runner.reviewMaintenance(...args);
+          break;
+        case 'addProcurement':
+          runner.addProcurement(...args);
+          break;
+        case 'decideProcurement':
+          runner.decideProcurement(...args);
+          break;
+        case 'markProcurementPurchased':
+          runner.markProcurementPurchased(...args);
+          break;
+        case 'addBooking':
+          runner.addBooking(...args);
+          break;
+        case 'decideBooking':
+          runner.decideBooking(...args);
+          break;
+        case 'addUser':
+          runner.addUser(...args);
+          break;
+        case 'updateUserRole':
+          runner.updateUserRole(...args);
+          break;
+        default:
+          reject(new Error('Fungsi ' + fnName + ' tidak ditemukan di server.'));
+      }
+    });
+  }
+
+  function escapeHtml(str) {
+    return String(str == null ? '' : str).replace(/[&<>"']/g, (m) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[m]));
+  }
+
+  function alertErr(err) { alert('Gagal: ' + (err && err.message ? err.message : err)); }
+
+  function statusTone(s) {
+    if (['Selesai', 'Disetujui', 'Dibeli'].indexOf(s) !== -1) return 'good';
+    if (s === 'Diproses') return 'warn';
+    if (s === 'Ditolak') return 'bad';
+    return 'neutral';
+  }
+
+  function conditionTone(c) {
+    if (c === 'Baik') return 'good';
+    if (c === 'Rusak Ringan') return 'warn';
+    return 'bad';
+  }
+
+  function badge(status, text) {
+    return '<span class="badge badge-' + statusTone(status) + '">' + escapeHtml(text || status) + '</span>';
+  }
+
+  function statCard(label, value, sub, tone) {
+    return '<div class="stat-card"><p class="stat-label">' + escapeHtml(label) + '</p>' +
+      '<p class="stat-value ' + (tone ? 'tone-' + tone : '') + '">' + value + '</p>' +
+      '<p class="stat-sub">' + escapeHtml(sub || '') + '</p></div>';
+  }
+
+  // ---------------- AUTENTIKASI & BOOT ----------------
+
+  function boot() {
+    const savedUser = localStorage.getItem('sarpras_user');
+    if (!savedUser) {
+      renderLoginForm();
+      return;
+    }
+
+    try {
+      STATE.userSession = JSON.parse(savedUser);
+    } catch (e) {
+      localStorage.removeItem('sarpras_user');
+      renderLoginForm();
+      return;
+    }
+
+    callServer('getBootstrapData', STATE.userSession).then((data) => {
+      data = data || {};
+      STATE.data = {
+        madrasah: data.madrasah || 'MTs Darul Fallah',
+        user: data.user || STATE.userSession,
+        assets: Array.isArray(data.assets) ? data.assets : [],
+        maintenance: Array.isArray(data.maintenance) ? data.maintenance : [],
+        procurement: Array.isArray(data.procurement) ? data.procurement : [],
+        bookings: Array.isArray(data.bookings) ? data.bookings : [],
+        users: Array.isArray(data.users) ? data.users : []
+      };
+
+      renderUserInfo();
+      goTo(STATE.page || 'dashboard');
+    }).catch((err) => {
+      document.getElementById('content').innerHTML =
+        '<div class="panel"><p style="color:var(--bad)">Terjadi kesalahan saat memuat data: ' + escapeHtml(err.message || err) + '</p></div>';
+    });
+  }
+
+  function renderLoginForm() {
+    document.getElementById('navList').innerHTML = '';
+    document.getElementById('userInfo').innerHTML = '';
+    document.getElementById('pageTitle').textContent = 'Masuk e-Sarpras';
+    document.getElementById('pageLede').textContent = 'Silakan masuk menggunakan email dan password terdaftar.';
+    
+    document.getElementById('content').innerHTML = `
+      <div style="max-width:380px; margin:40px auto; padding:24px; background:#fff; border-radius:12px; border:1px solid #E2E8F0; box-shadow:0 4px 12px rgba(0,0,0,0.05)">
+        <div style="text-align:center; margin-bottom:16px;">
+          <img src="https://lh3.googleusercontent.com/d/1kf_OX9MmdUMyMeVR6yuJRLsTdFzTRzHv" alt="Logo MTs Darul Fallah" style="width:56px; height:56px; border-radius:50%; object-fit:cover; border:1px solid #A9812F;">
+          <h3 style="margin-top:8px; font-weight:600; color:#0F2624;">Formulir Login</h3>
+        </div>
+        <div class="field" style="margin-bottom:12px;">
+          <label style="display:block; font-size:13px; margin-bottom:4px; font-weight:500;">Email</label>
+          <input id="login-email" type="email" placeholder="admin@madrasah.sch.id" style="width:100%; padding:8px 12px; border:1px solid #CBD5E1; border-radius:6px;">
+        </div>
+        <div class="field" style="margin-bottom:16px;">
+          <label style="display:block; font-size:13px; margin-bottom:4px; font-weight:500;">Password</label>
+          <input id="login-pass" type="password" placeholder="••••••••" style="width:100%; padding:8px 12px; border:1px solid #CBD5E1; border-radius:6px;">
+        </div>
+        <button class="btn" style="width:100%; justify-content:center;" onclick="processLogin(this)">Masuk Sistem</button>
+      </div>
+    `;
+  }
+
+  function processLogin(btn) {
+    const email = document.getElementById('login-email').value.trim();
+    const pass = document.getElementById('login-pass').value.trim();
+
+    if (!email || !pass) {
+      alert('Email dan Password wajib diisi!');
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Memverifikasi...';
+
+    callServer('loginUser', email, pass).then((userSession) => {
+      localStorage.setItem('sarpras_user', JSON.stringify(userSession));
+      boot();
+    }).catch((err) => {
+      alert('Login Gagal: ' + (err.message || err));
+      btn.disabled = false;
+      btn.textContent = 'Masuk Sistem';
+    });
+  }
+
+  function logout() {
+    localStorage.removeItem('sarpras_user');
+    STATE.userSession = null;
+    STATE.data = null;
+    renderLoginForm();
+  }
+
+  function renderUserInfo() {
+    const u = (STATE.data && STATE.data.user) ? STATE.data.user : { name: 'Pengguna', role: 'guru', email: '' };
+    document.getElementById('userInfo').innerHTML = `
+      <div class="current-user" style="padding:10px; background:rgba(255,255,255,0.05); border-radius:6px;">
+        <p class="u-name" style="font-weight:600; margin-bottom:2px; font-size:13px; color:#FFF;">${escapeHtml(u.name)}</p>
+        <p style="font-size:11px; color:#A9812F; margin-bottom:8px;">${escapeHtml(ROLE_LABEL[u.role] || u.role)}</p>
+        <button onclick="logout()" class="btn secondary small" style="width:100%; font-size:11px; padding:4px;">Keluar (Logout)</button>
+      </div>
+    `;
+  }
+
+  function renderNav() {
+    document.getElementById('navList').innerHTML = NAV.map((n) =>
+      '<button class="nav-item ' + (STATE.page === n.id ? 'active' : '') + '" onclick="goTo(\'' + n.id + '\')">' + escapeHtml(n.label) + '</button>'
+    ).join('');
+  }
+
+  function goTo(page) {
+    if (!STATE.userSession) {
+      renderLoginForm();
+      return;
+    }
+    STATE.page = page;
+    STATE.search = '';
+    const nav = NAV.find((n) => n.id === page) || NAV[0];
+    document.getElementById('pageTitle').textContent = nav.label;
+    document.getElementById('pageLede').textContent = nav.lede;
+    renderNav();
+    renderPage();
+  }
+
+  function roleNoteHtml() {
+    const role = (STATE.data && STATE.data.user) ? STATE.data.user.role : 'guru';
+    const map = {
+      guru: 'Hak Akses Guru & Staf: Anda dapat mengajukan usulan perbaikan dan peminjaman ruangan.',
+      admin: 'Hak Akses Admin Sarpras: Anda mengelola inventaris, cetak barcode, memproses usulan, dan membuat pengadaan.',
+      kepala: 'Hak Akses Kepala Madrasah: Anda dapat mereview usulan, memberikan persetujuan/catatan tindak lanjut, dan melihat laporan.',
+    };
+    return '<div class="role-note" style="margin-bottom:16px; padding:10px 14px; background:#F1F5F9; border-left:4px solid #0F2624; font-size:12px; color:#334155;">' + escapeHtml(map[role] || '') + '</div>';
+  }
+
+  function renderPage() {
+    if (!STATE.userSession) return;
+    const renderers = {
+      dashboard: renderDashboard, inventaris: renderInventaris, usulan: renderUsulan,
+      pengadaan: renderPengadaan, peminjaman: renderPeminjaman, akreditasi: renderAkreditasi,
+      pengguna: renderPengguna,
+    };
+    const note = STATE.page !== 'dashboard' ? roleNoteHtml() : '';
+    document.getElementById('content').innerHTML = note + (renderers[STATE.page] ? renderers[STATE.page]() : '');
+  }
+
+  // ---------------- DASHBOARD ----------------
+
+  function renderDashboard() {
+    const assets = (STATE.data && Array.isArray(STATE.data.assets)) ? STATE.data.assets : [];
+    const maintenance = (STATE.data && Array.isArray(STATE.data.maintenance)) ? STATE.data.maintenance : [];
+    const procurement = (STATE.data && Array.isArray(STATE.data.procurement)) ? STATE.data.procurement : [];
+    const bookings = (STATE.data && Array.isArray(STATE.data.bookings)) ? STATE.data.bookings : [];
+
+    const cond = { Baik: 0, 'Rusak Ringan': 0, 'Rusak Berat': 0 };
+    assets.forEach((a) => (cond[a.Kondisi] = (cond[a.Kondisi] || 0) + Number(a.Jumlah || 0)));
+    const total = cond.Baik + cond['Rusak Ringan'] + cond['Rusak Berat'];
+    const pct = (n) => (total ? Math.round((n / total) * 100) : 0);
+
+    const validMaintenance = maintenance.filter(m => m.Aset && m.Aset !== '');
+    const maintPending = validMaintenance.filter((m) => String(m.Status).toLowerCase() !== 'selesai').length;
+    const maintDone = validMaintenance.filter((m) => String(m.Status).toLowerCase() === 'selesai').length;
+
+    const procPending = procurement.filter((p) => String(p.Status).toLowerCase() === 'diajukan').length;
+    const bookPending = bookings.filter((b) => String(b.Status).toLowerCase() === 'diajukan').length;
+
+    return `
+      <div class="stat-grid">
+        ${statCard('Total unit aset', total, assets.length + ' jenis barang tercatat')}
+        ${statCard('Kondisi rusak berat', cond['Rusak Berat'], pct(cond['Rusak Berat']) + '% dari total unit', 'bad')}
+        ${statCard('Usulan belum selesai', maintPending, maintDone + ' selesai tercatat', maintPending > 0 ? 'warn' : '')}
+        ${statCard('Pengadaan menunggu', procPending, 'Menunggu persetujuan Kepala Madrasah', procPending > 0 ? 'warn' : '')}
+        ${statCard('Peminjaman menunggu', bookPending, 'Perlu tindak lanjut', bookPending > 0 ? 'warn' : '')}
+      </div>
+      <div class="panel">
+        <div class="section-header"><div><p class="eyebrow">Kondisi aset</p><h2>Komposisi kondisi seluruh unit</h2></div></div>
+        <div class="cond-bar">
+          <div class="cond-seg-good" style="width:${pct(cond.Baik)}%"></div>
+          <div class="cond-seg-warn" style="width:${pct(cond['Rusak Ringan'])}%"></div>
+          <div class="cond-seg-bad" style="width:${pct(cond['Rusak Berat'])}%"></div>
+        </div>
+        <div class="cond-legend">
+          <span><span class="dot" style="background:var(--good)"></span>Baik — ${cond.Baik} unit (${pct(cond.Baik)}%)</span>
+          <span><span class="dot" style="background:var(--warn)"></span>Rusak Ringan — ${cond['Rusak Ringan']} unit (${pct(cond['Rusak Ringan'])}%)</span>
+          <span><span class="dot" style="background:var(--bad)"></span>Rusak Berat — ${cond['Rusak Berat']} unit (${pct(cond['Rusak Berat'])}%)</span>
+        </div>
+      </div>
+    `;
+  }
+
+  // ---------------- INVENTARIS (DENGAN TAMPILAN BARCODE) ----------------
+
+  function renderInventaris() {
+    const role = (STATE.data && STATE.data.user) ? STATE.data.user.role : 'guru';
+    const canEdit = role === 'admin';
+    const q = (STATE.search || '').toLowerCase();
+    const assets = (STATE.data && Array.isArray(STATE.data.assets)) ? STATE.data.assets : [];
+    const rows = assets.filter((a) => (String(a.Nama || '') + String(a.Lokasi || '') + String(a.Kategori || '') + String(a.ID || '')).toLowerCase().includes(q));
+    
+    return `
+      <div class="section-header">
+        <div><p class="eyebrow">${assets.length} jenis barang</p><h2>Data inventaris aset & barcode</h2></div>
+        <div class="toolbar">
+          <div class="search-box"><input placeholder="Cari nama, lokasi, kode barcode…" value="${escapeHtml(STATE.search)}" oninput="onSearchInput(this.value)"></div>
+          <button class="btn" ${canEdit ? '' : 'disabled'} onclick="openAssetForm()">+ Tambah Aset</button>
+        </div>
+      </div>
+      <div class="panel" style="padding:0">
+        <table>
+          <thead><tr><th>ID / Barcode</th><th>Nama Barang</th><th>Lokasi</th><th>Kategori</th><th>Jumlah</th><th>Kondisi</th><th>Aksi Label</th></tr></thead>
+          <tbody>
+            ${rows.map((a) => {
+              const code = a.Barcode || a.ID;
+              const barcodeImgUrl = getBarcodeUrl(code);
+              return `<tr>
+                <td style="white-space:nowrap;">
+                  <img src="${barcodeImgUrl}" alt="${escapeHtml(code)}" class="barcode-img" onerror="this.style.display='none'"><br>
+                  <small class="muted" style="font-weight:600">${escapeHtml(code)}</small>
+                </td>
+                <td style="font-weight:500">${escapeHtml(a.Nama)}</td>
+                <td class="muted">${escapeHtml(a.Lokasi)}</td>
+                <td class="muted">${escapeHtml(a.Kategori)}</td>
+                <td>${a.Jumlah}</td>
+                <td><span class="badge badge-${conditionTone(a.Kondisi)}">${escapeHtml(a.Kondisi)}</span></td>
+                <td><button class="btn secondary small" onclick="openBarcodeModal('${escapeHtml(a.ID)}', '${escapeHtml(a.Nama)}', '${escapeHtml(a.Lokasi)}', '${escapeHtml(code)}')">🔍 Cetak Barcode</button></td>
+              </tr>`;
+            }).join('') || '<tr><td colspan="7" class="empty-note">Tidak ada aset yang cocok dengan pencarian.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function openBarcodeModal(id, nama, lokasi, code) {
+    const barcodeImgUrl = getBarcodeUrl(code);
+    openModal('Label Barcode Aset', `
+      <div id="printableBarcodeLabel" class="barcode-card">
+        <h4 style="color:var(--brand); margin-bottom:2px;">MTs Darul Fallah</h4>
+        <p style="font-weight:bold; font-size:14px; color:#000;">${escapeHtml(nama)}</p>
+        <p style="font-size:11px;">Lokasi: ${escapeHtml(lokasi)}</p>
+        <img src="${barcodeImgUrl}" alt="Barcode ${escapeHtml(code)}">
+        <p style="font-weight:bold; letter-spacing:1px; color:#000;">* ${escapeHtml(code)} *</p>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Tutup</button>
+        <button class="btn" onclick="printBarcodeLabel()">Cetak Label Barcode</button>
+      </div>
+    `);
+  }
+
+  function printBarcodeLabel() {
+    const content = document.getElementById('printableBarcodeLabel').outerHTML;
+    const printWindow = window.open('', '', 'width=400,height=400');
+    printWindow.document.write('<html><head><title>Cetak Label Barcode</title><style>body{font-family:sans-serif; text-align:center; padding:20px;}.barcode-card{border:1px solid #000; padding:15px; border-radius:6px;} img{max-width:100%; height:60px;}</style></head><body>');
+    printWindow.document.write(content);
+    printWindow.document.write('</body></html>');
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => { printWindow.print(); printWindow.close(); }, 500);
+  }
+
+  function onSearchInput(v) {
+    STATE.search = v;
+    renderPage();
+    const el = document.querySelector('.search-box input');
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  }
+
+  // ---------------- USULAN PERBAIKAN ----------------
+
+  function renderUsulan() {
+    const role = (STATE.data && STATE.data.user) ? STATE.data.user.role : 'guru';
+    const canFile = role === 'admin' || role === 'guru';
+    const canProcess = role === 'admin';
+    const canKepala = role === 'kepala';
+    const rows = (STATE.data && Array.isArray(STATE.data.maintenance)) ? STATE.data.maintenance : [];
+    return `
+      <div class="section-header">
+        <div><p class="eyebrow">${rows.length} usulan</p><h2>Usulan perbaikan</h2></div>
+        <button class="btn" ${canFile ? '' : 'disabled'} onclick="openMaintForm()">+ Ajukan Usulan</button>
+      </div>
+      <div class="panel" style="padding:0">
+        <table>
+          <thead><tr><th>Aset</th><th>Keluhan & Arahan Kepala</th><th>Diajukan oleh</th><th>Prioritas</th><th>Status</th><th>Aksi</th></tr></thead>
+          <tbody>
+            ${rows.map((m) => `<tr>
+              <td style="font-weight:500">${escapeHtml(m.Aset)}</td>
+              <td>
+                <div>${escapeHtml(m.Keluhan)}</div>
+                ${m.Catatan && m.Catatan !== '-' ? `<div class="note-box"><strong>Catatan Kepala:</strong> ${escapeHtml(m.Catatan)}</div>` : ''}
+              </td>
+              <td class="muted">${escapeHtml(m.DiajukanOleh)}</td>
+              <td><span class="badge badge-${m.Prioritas === 'Tinggi' ? 'bad' : m.Prioritas === 'Sedang' ? 'warn' : 'neutral'}">${escapeHtml(m.Prioritas)}</span></td>
+              <td>${badge(m.Status)}</td>
+              <td style="text-align:right; white-space:nowrap">
+                ${canKepala ? `<button class="btn small" onclick="openReviewMaintModal('${m.ID}', '${escapeHtml(m.Status)}', '${escapeHtml(m.Catatan || '')}')">Review / Arahan</button>` : ''}
+                ${canProcess && !canKepala ? `${m.Status !== 'Selesai' ? `<button class="btn secondary small" onclick="advanceMaint('${m.ID}')">${m.Status === 'Diajukan' ? 'Proses' : 'Tandai Selesai'}</button>` : ''}` : ''}
+              </td>
+            </tr>`).join('') || '<tr><td colspan="6" class="empty-note">Belum ada usulan perbaikan.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function advanceMaint(id) {
+    callServer('advanceMaintenanceStatus', id).then((data) => { STATE.data.maintenance = data; renderPage(); }).catch(alertErr);
+  }
+
+  function openReviewMaintModal(id, currentStatus, currentNote) {
+    openModal('Review Arahan Kepala Madrasah', `
+      <div class="field">
+        <label>Status Usulan</label>
+        <select id="f-rev-status">
+          <option value="Diajukan" ${currentStatus === 'Diajukan' ? 'selected' : ''}>Diajukan</option>
+          <option value="Diproses" ${currentStatus === 'Diproses' ? 'selected' : ''}>Diproses Staf/Admin</option>
+          <option value="Selesai" ${currentStatus === 'Selesai' ? 'selected' : ''}>Selesai / Setuju</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Catatan Arahan untuk Staf / Admin</label>
+        <textarea id="f-rev-note" placeholder="Tuliskan catatan tindak lanjut untuk admin/staf sarpras...">${escapeHtml(currentNote === '-' ? '' : currentNote)}</textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Batal</button>
+        <button class="btn" onclick="submitReviewMaint('${id}', this)">Simpan Arahan</button>
+      </div>
+    `);
+  }
+
+  function submitReviewMaint(id, btn) {
+    const status = document.getElementById('f-rev-status').value;
+    const note = document.getElementById('f-rev-note').value.trim();
+    btn.disabled = true;
+    callServer('reviewMaintenance', id, status, note).then((data) => {
+      STATE.data.maintenance = data;
+      closeModal();
+      renderPage();
+    }).catch((e) => { alertErr(e); btn.disabled = false; });
+  }
+
+  // ---------------- PENGADAAN ----------------
+
+  function renderPengadaan() {
+    const role = (STATE.data && STATE.data.user) ? STATE.data.user.role : 'guru';
+    const canCreate = role === 'admin';
+    const canApprove = role === 'kepala';
+    const rows = (STATE.data && Array.isArray(STATE.data.procurement)) ? STATE.data.procurement : [];
+    return `
+      <div class="section-header">
+        <div><p class="eyebrow">${rows.length} pengajuan</p><h2>Pengadaan barang</h2></div>
+        <button class="btn" ${canCreate ? '' : 'disabled'} onclick="openProcForm()">+ Buat Pengajuan</button>
+      </div>
+      <div class="panel" style="padding:0">
+        <table>
+          <thead><tr><th>Barang</th><th>Alasan & Catatan</th><th>Estimasi Biaya</th><th>Status</th><th>Aksi</th></tr></thead>
+          <tbody>
+            ${rows.map((p) => `<tr>
+              <td style="font-weight:500">${escapeHtml(p.Barang)}</td>
+              <td>
+                <div>${escapeHtml(p.Alasan)}</div>
+                ${p.Catatan && p.Catatan !== '-' ? `<div class="note-box"><strong>Catatan Kepala:</strong> ${escapeHtml(p.Catatan)}</div>` : ''}
+              </td>
+              <td class="muted">${escapeHtml(p.Biaya)}</td>
+              <td>${badge(p.Status)}</td>
+              <td style="text-align:right; white-space:nowrap">
+                ${canApprove ? `<button class="btn small" onclick="openReviewProcModal('${p.ID}', '${escapeHtml(p.Status)}', '${escapeHtml(p.Catatan || '')}')">Review / Setujui</button>` : ''}
+                ${canCreate && !canApprove && p.Status === 'Disetujui' ? `<button class="btn secondary small" onclick="purchaseProc('${p.ID}')">Tandai Dibeli</button>` : ''}
+              </td>
+            </tr>`).join('') || '<tr><td colspan="5" class="empty-note">Belum ada pengajuan pengadaan.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function openReviewProcModal(id, currentStatus, currentNote) {
+    openModal('Review Pengadaan (Kepala Madrasah)', `
+      <div class="field">
+        <label>Keputusan / Status</label>
+        <select id="f-proc-status">
+          <option value="Disetujui" ${currentStatus === 'Disetujui' ? 'selected' : ''}>Disetujui</option>
+          <option value="Ditolak" ${currentStatus === 'Ditolak' ? 'selected' : ''}>Ditolak</option>
+          <option value="Diajukan" ${currentStatus === 'Diajukan' ? 'selected' : ''}>Pending (Diajukan)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Catatan Arahan / Pertimbangan</label>
+        <textarea id="f-proc-note" placeholder="Tuliskan catatan tindak lanjut untuk admin sarpras...">${escapeHtml(currentNote === '-' ? '' : currentNote)}</textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Batal</button>
+        <button class="btn" onclick="submitReviewProc('${id}', this)">Simpan Keputusan</button>
+      </div>
+    `);
+  }
+
+  function submitReviewProc(id, btn) {
+    const status = document.getElementById('f-proc-status').value;
+    const note = document.getElementById('f-proc-note').value.trim();
+    btn.disabled = true;
+    callServer('decideProcurement', id, status, note).then((data) => {
+      STATE.data.procurement = data;
+      closeModal();
+      renderPage();
+    }).catch((e) => { alertErr(e); btn.disabled = false; });
+  }
+
+  function purchaseProc(id) {
+    callServer('markProcurementPurchased', id).then((data) => { STATE.data.procurement = data; renderPage(); }).catch(alertErr);
+  }
+
+  // ---------------- PEMINJAMAN ----------------
+
+  function renderPeminjaman() {
+    const role = (STATE.data && STATE.data.user) ? STATE.data.user.role : 'guru';
+    const canFile = role === 'admin' || role === 'guru';
+    const canApprove = role === 'admin' || role === 'kepala';
+    const rows = (STATE.data && Array.isArray(STATE.data.bookings)) ? STATE.data.bookings : [];
+    return `
+      <div class="section-header">
+        <div><p class="eyebrow">${rows.length} permohonan</p><h2>Peminjaman ruangan & fasilitas</h2></div>
+        <button class="btn" ${canFile ? '' : 'disabled'} onclick="openBookForm()">+ Ajukan Peminjaman</button>
+      </div>
+      <div class="panel" style="padding:0">
+        <table>
+          <thead><tr><th>Fasilitas</th><th>Tanggal & Waktu</th><th>Keperluan & Catatan</th><th>Pemohon</th><th>Status</th><th>Aksi</th></tr></thead>
+          <tbody>
+            ${rows.map((b) => `<tr>
+              <td style="font-weight:500">${escapeHtml(b.Fasilitas)}</td>
+              <td class="muted">${escapeHtml(b.Tanggal)} · ${escapeHtml(b.Waktu)}</td>
+              <td>
+                <div>${escapeHtml(b.Keperluan)}</div>
+                ${b.Catatan && b.Catatan !== '-' ? `<div class="note-box"><strong>Catatan:</strong> ${escapeHtml(b.Catatan)}</div>` : ''}
+              </td>
+              <td class="muted">${escapeHtml(b.Pemohon)}</td>
+              <td>${badge(b.Status)}</td>
+              <td style="text-align:right; white-space:nowrap">
+                ${canApprove ? `<button class="btn small" onclick="openReviewBookModal('${b.ID}', '${escapeHtml(b.Status)}', '${escapeHtml(b.Catatan || '')}')">Review / Setujui</button>` : ''}
+              </td>
+            </tr>`).join('') || '<tr><td colspan="6" class="empty-note">Belum ada permohonan peminjaman.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function openReviewBookModal(id, currentStatus, currentNote) {
+    openModal('Review Peminjaman Ruangan', `
+      <div class="field">
+        <label>Keputusan / Status</label>
+        <select id="f-book-status">
+          <option value="Disetujui" ${currentStatus === 'Disetujui' ? 'selected' : ''}>Disetujui</option>
+          <option value="Ditolak" ${currentStatus === 'Ditolak' ? 'selected' : ''}>Ditolak</option>
+          <option value="Diajukan" ${currentStatus === 'Diajukan' ? 'selected' : ''}>Pending (Diajukan)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Catatan Arahan / Persyaratan Ruangan</label>
+        <textarea id="f-book-note" placeholder="Tuliskan catatan tindak lanjut jika ada...">${escapeHtml(currentNote === '-' ? '' : currentNote)}</textarea>
+      </div>
+      <div class="modal-actions">
+        <button class="btn secondary" onclick="closeModal()">Batal</button>
+        <button class="btn" onclick="submitReviewBook('${id}', this)">Simpan Keputusan</button>
+      </div>
+    `);
+  }
+
+  function submitReviewBook(id, btn) {
+    const status = document.getElementById('f-book-status').value;
+    const note = document.getElementById('f-book-note').value.trim();
+    btn.disabled = true;
+    callServer('decideBooking', id, status, note).then((data) => {
+      STATE.data.bookings = data;
+      closeModal();
+      renderPage();
+    }).catch((e) => { alertErr(e); btn.disabled = false; });
+  }
+
+  // ---------------- LAPORAN AKREDITASI ----------------
+
+  function renderAkreditasi() {
+    const assets = (STATE.data && Array.isArray(STATE.data.assets)) ? STATE.data.assets : [];
+    const maintenance = (STATE.data && Array.isArray(STATE.data.maintenance)) ? STATE.data.maintenance : [];
+    const procurement = (STATE.data && Array.isArray(STATE.data.procurement)) ? STATE.data.procurement : [];
+    const bookings = (STATE.data && Array.isArray(STATE.data.bookings)) ? STATE.data.bookings : [];
+    const madrasah = (STATE.data && STATE.data.madrasah) ? STATE.data.madrasah : 'MTs Darul Fallah';
+
+    const cond = { Baik: 0, 'Rusak Ringan': 0, 'Rusak Berat': 0 };
+    assets.forEach((a) => (cond[a.Kondisi] = (cond[a.Kondisi] || 0) + Number(a.Jumlah || 0)));
+    const total = cond.Baik + cond['Rusak Ringan'] + cond['Rusak Berat'];
+    const pct = (n) => (total ? Math.round((n / total) * 100) : 0);
+    const maintDone = maintenance.filter((m) => String(m.Status).toLowerCase() === 'selesai').length;
+    const today = new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' });
+
+    return `
+      <div class="section-header">
+        <div><p class="eyebrow">Dibuat otomatis dari data sistem</p><h2>Ringkasan sarana & prasarana</h2></div>
+        <button class="btn secondary" onclick="window.print()">Cetak Laporan</button>
+      </div>
+      <div class="report-doc">
+        <div class="report-head">
+          <img src="https://lh3.googleusercontent.com/d/1kf_OX9MmdUMyMeVR6yuJRLsTdFzTRzHv" alt="Logo MTs Darul Fallah" class="report-logo">
+          <div>
+            <h1>Laporan Sarana & Prasarana</h1>
+            <p>${escapeHtml(madrasah)} — Tahun Ajaran 2026/2027 · Dicetak ${today}</p>
+          </div>
+        </div>
+        <div class="report-section">
+          <h3>1. Kondisi Aset</h3>
+          <div class="cond-bar">
+            <div class="cond-seg-good" style="width:${pct(cond.Baik)}%"></div>
+            <div class="cond-seg-warn" style="width:${pct(cond['Rusak Ringan'])}%"></div>
+            <div class="cond-seg-bad" style="width:${pct(cond['Rusak Berat'])}%"></div>
+          </div>
+          <div class="report-grid">
+            <div class="report-metric"><div class="n">${total}</div><div class="l">Total unit aset</div></div>
+            <div class="report-metric"><div class="n">${pct(cond.Baik)}%</div><div class="l">Kondisi baik</div></div>
+            <div class="report-metric"><div class="n">${pct(cond['Rusak Ringan'])}%</div><div class="l">Rusak ringan</div></div>
+            <div class="report-metric"><div class="n">${pct(cond['Rusak Berat'])}%</div><div class="l">Rusak berat</div></div>
+          </div>
+        </div>
+        <div class="report-section">
+          <h3>2. Pemeliharaan & Perbaikan</h3>
+          <div class="report-grid">
+            <div class="report-metric"><div class="n">${maintenance.length}</div><div class="l">Usulan diajukan</div></div>
+            <div class="report-metric"><div class="n">${maintDone}</div><div class="l">Selesai ditangani</div></div>
+            <div class="report-metric"><div class="n">${maintenance.length ? Math.round((maintDone / maintenance.length) * 100) : 0}%</div><div class="l">Tingkat penyelesaian</div></div>
+          </div>
+        </div>
+        <div class="report-section">
+          <h3>3. Pengadaan Barang</h3>
+          <div class="report-grid">
+            <div class="report-metric"><div class="n">${procurement.length}</div><div class="l">Pengajuan tercatat</div></div>
+            <div class="report-metric"><div class="n">${procurement.filter((p) => p.Status === 'Disetujui' || p.Status === 'Dibeli').length}</div><div class="l">Disetujui</div></div>
+            <div class="report-metric"><div class="n">${procurement.filter((p) => p.Status === 'Dibeli').length}</div><div class="l">Telah direalisasikan</div></div>
+          </div>
+        </div>
+        <div class="report-section">
+          <h3>4. Pemanfaatan Ruang & Fasilitas</h3>
+          <div class="report-grid">
+            <div class="report-metric"><div class="n">${bookings.length}</div><div class="l">Permohonan tercatat</div></div>
+            <div class="report-metric"><div class="n">${bookings.filter((b) => b.Status === 'Disetujui').length}</div><div class="l">Disetujui & terlaksana</div></div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:var(--muted)">Data pada laporan ini dihimpun otomatis dari sistem e-Sarpras Madrasah dan disusun untuk mendukung dokumen akreditasi (BAN-S/M) pada indikator sarana dan prasarana.</p>
+        <div class="signoff"><div class="signoff-block">Mengetahui,<div class="line">Kepala Madrasah</div></div></div>
+      </div>
+    `;
+  }
+
+  // ---------------- MANAJEMEN PENGGUNA ----------------
+
+  function renderPengguna() {
+    const role = (STATE.data && STATE.data.user) ? STATE.data.user.role : 'guru';
+    const canManage = role === 'admin';
+    const rows = (STATE.data && Array.isArray(STATE.data.users)) ? STATE.data.users : [];
+    return `
+      <div class="section-header">
+        <div><p class="eyebrow">${rows.length} pengguna terdaftar</p><h2>Manajemen Pengguna</h2></div>
+        <button class="btn" ${canManage ? '' : 'disabled'} onclick="openUserForm()">+ Tambah Akun</button>
+      </div>
+      <div class="panel" style="padding:0">
+        <table>
+          <thead><tr><th>Nama</th><th>Email</th><th>Peran</th></tr></thead>
+          <tbody>
+            ${rows.map((u) => `<tr>
+              <td style="font-weight:500">${escapeHtml(u.Nama)}</td>
+              <td class="muted">${escapeHtml(u.Email)}</td>
+              <td>
+                ${canManage ? `
+                  <select onchange="changeRole('${escapeHtml(u.Email)}', this.value)">
+                    <option value="guru" ${u.Peran === 'guru' ? 'selected' : ''}>Guru & Staf</option>
+                    <option value="admin" ${u.Peran === 'admin' ? 'selected' : ''}>Admin Sarpras</option>
+                    <option value="kepala" ${u.Peran === 'kepala' ? 'selected' : ''}>Kepala Madrasah</option>
+                  </select>
+                ` : `<span class="badge badge-neutral">${escapeHtml(ROLE_LABEL[u.Peran] || u.Peran)}</span>`}
+              </td>
+            </tr>`).join('') || '<tr><td colspan="3" class="empty-note">Belum ada pengguna terdaftar.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function changeRole(email, role) {
+    callServer('updateUserRole', email, role).then((data) => { STATE.data.users = data; renderPage(); }).catch(alertErr);
+  }
+
+  function openUserForm() {
+    openModal('Tambah Akun Pengguna', `
+      <div class="field"><label>Email</label><input id="f-user-email" type="email" placeholder="user@madrasah.sch.id"></div>
+      <div class="field"><label>Nama Lengkap</label><input id="f-user-name"></div>
+      <div class="field"><label>Peran / Jabatan</label>
+        <select id="f-user-role">
+          <option value="guru">Guru & Staf</option>
+          <option value="admin">Admin Sarpras</option>
+          <option value="kepala">Kepala Madrasah</option>
+        </select>
+      </div>
+      <div class="field"><label>Password Akun</label><input id="f-user-pass" type="password" placeholder="••••••••"></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Batal</button><button class="btn" onclick="submitUser(this)">Simpan Akun</button></div>
+    `);
+  }
+
+  function submitUser(btn) {
+    const form = {
+      email: document.getElementById('f-user-email').value.trim(),
+      name: document.getElementById('f-user-name').value.trim(),
+      role: document.getElementById('f-user-role').value,
+      password: document.getElementById('f-user-pass').value.trim(),
+    };
+    if (!form.email || !form.name || !form.password) { alert('Semua data wajib diisi.'); return; }
+    btn.disabled = true;
+    callServer('addUser', form).then((data) => { STATE.data.users = data; closeModal(); renderPage(); }).catch((e) => { alertErr(e); btn.disabled = false; });
+  }
+
+  // ---------------- MODAL BUILDER ----------------
+
+  function openModal(title, bodyHtml) {
+    document.getElementById('modalRoot').innerHTML = `
+      <div class="modal-backdrop" onclick="closeModalOnBackdrop(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+          <div class="modal-head"><h3>${escapeHtml(title)}</h3><button class="icon-btn" onclick="closeModal()">✕</button></div>
+          <div class="modal-body">${bodyHtml}</div>
+        </div>
+      </div>`;
+  }
+  function closeModal() { document.getElementById('modalRoot').innerHTML = ''; }
+  function closeModalOnBackdrop(e) { if (e.target.classList.contains('modal-backdrop')) closeModal(); }
+
+  function openAssetForm() {
+    openModal('Tambah Aset (Otomatis Generate Barcode)', `
+      <div class="field"><label>Nama Barang</label><input id="f-name"></div>
+      <div class="field"><label>Lokasi</label><input id="f-location"></div>
+      <div class="field"><label>Kategori</label>
+        <select id="f-category"><option>Furnitur</option><option>Elektronik</option><option>Koleksi Ibadah</option><option>Lainnya</option></select>
+      </div>
+      <div class="field"><label>Jumlah</label><input id="f-qty" type="number" min="1" value="1"></div>
+      <div class="field"><label>Tahun Perolehan</label><input id="f-year" type="number" value="2026"></div>
+      <div class="field"><label>Kondisi</label><select id="f-condition">${CONDITIONS.map((c) => `<option>${c}</option>`).join('')}</select></div>
+      <p style="font-size:11px; color:var(--accent); margin-top:-8px; margin-bottom:12px;">* Kode Barcode unik akan di-generate otomatis oleh sistem saat disimpan.</p>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Batal</button><button class="btn" onclick="submitAsset(this)">Simpan & Generate Barcode</button></div>
+    `);
+  }
+
+  function submitAsset(btn) {
+    const form = {
+      name: document.getElementById('f-name').value.trim(),
+      location: document.getElementById('f-location').value.trim(),
+      category: document.getElementById('f-category').value,
+      qty: document.getElementById('f-qty').value,
+      year: document.getElementById('f-year').value,
+      condition: document.getElementById('f-condition').value,
+    };
+    if (!form.name || !form.location) { alert('Nama dan lokasi wajib diisi.'); return; }
+    btn.disabled = true;
+    callServer('addAsset', form).then((data) => { STATE.data.assets = data; closeModal(); renderPage(); }).catch((e) => { alertErr(e); btn.disabled = false; });
+  }
+
+  function openMaintForm() {
+    openModal('Ajukan Usulan Perbaikan', `
+      <div class="field"><label>Nama & Lokasi Aset</label><input id="f-asset" placeholder="cth. Proyektor — Ruang Guru"></div>
+      <div class="field"><label>Uraikan Keluhan</label><textarea id="f-issue"></textarea></div>
+      <div class="field"><label>Prioritas</label><select id="f-priority"><option>Tinggi</option><option selected>Sedang</option><option>Rendah</option></select></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Batal</button><button class="btn" onclick="submitMaint(this)">Ajukan</button></div>
+    `);
+  }
+  function submitMaint(btn) {
+    const form = {
+      asset: document.getElementById('f-asset').value.trim(),
+      issue: document.getElementById('f-issue').value.trim(),
+      priority: document.getElementById('f-priority').value,
+    };
+    if (!form.asset || !form.issue) { alert('Lengkapi data usulan.'); return; }
+    btn.disabled = true;
+    callServer('addMaintenance', form).then((data) => { STATE.data.maintenance = data; closeModal(); renderPage(); }).catch((e) => { alertErr(e); btn.disabled = false; });
+  }
+
+  function openProcForm() {
+    openModal('Buat Pengajuan Pengadaan', `
+      <div class="field"><label>Nama Barang & Jumlah</label><input id="f-item"></div>
+      <div class="field"><label>Alasan Pengadaan</label><textarea id="f-reason"></textarea></div>
+      <div class="field"><label>Estimasi Biaya</label><input id="f-cost" placeholder="cth. Rp 5.000.000"></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Batal</button><button class="btn" onclick="submitProc(this)">Ajukan</button></div>
+    `);
+  }
+  function submitProc(btn) {
+    const form = {
+      item: document.getElementById('f-item').value.trim(),
+      reason: document.getElementById('f-reason').value.trim(),
+      cost: document.getElementById('f-cost').value.trim(),
+    };
+    if (!form.item || !form.reason) { alert('Lengkapi data pengajuan.'); return; }
+    btn.disabled = true;
+    callServer('addProcurement', form).then((data) => { STATE.data.procurement = data; closeModal(); renderPage(); }).catch((e) => { alertErr(e); btn.disabled = false; });
+  }
+
+  function openBookForm() {
+    openModal('Ajukan Peminjaman Ruangan', `
+      <div class="field"><label>Fasilitas</label><select id="f-facility">${FACILITIES.map((f) => `<option>${f}</option>`).join('')}</select></div>
+      <div class="field"><label>Tanggal</label><input id="f-date" type="date"></div>
+      <div class="field"><label>Waktu</label><input id="f-time" placeholder="cth. 09.00–10.30"></div>
+      <div class="field"><label>Keperluan</label><textarea id="f-purpose"></textarea></div>
+      <div class="modal-actions"><button class="btn secondary" onclick="closeModal()">Batal</button><button class="btn" onclick="submitBook(this)">Ajukan</button></div>
+    `);
+  }
+  function submitBook(btn) {
+    const form = {
+      facility: document.getElementById('f-facility').value,
+      date: document.getElementById('f-date').value,
+      time: document.getElementById('f-time').value.trim(),
+      purpose: document.getElementById('f-purpose').value.trim(),
+    };
+    if (!form.date || !form.purpose) { alert('Lengkapi data peminjaman.'); return; }
+    btn.disabled = true;
+    callServer('addBooking', form).then((data) => { STATE.data.bookings = data; closeModal(); renderPage(); }).catch((e) => { alertErr(e); btn.disabled = false; });
+  }
+
+  window.addEventListener('DOMContentLoaded', boot);
+</script>
